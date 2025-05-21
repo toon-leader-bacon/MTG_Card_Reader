@@ -12,7 +12,7 @@ class Reddit_API:
   def __init__(
       self,
       config_section: str = "mtg_card_collector",  # Section name in praw.ini to use for credentials
-      request_delay: float = 5.0,
+      request_delay: float = 1.0,  # Changed default to 1 second
       output_dir: str = "./data/raw/cards/reddit_custommagic"
   ):
     """
@@ -20,7 +20,7 @@ class Reddit_API:
 
     Args:
         config_section: Section name in praw.ini to use for credentials
-        request_delay: Time to wait between API requests in seconds
+        request_delay: Minimum time to wait between API requests in seconds
         output_dir: Directory to save downloaded images
     """
     # Initialize PRAW with the specified config section
@@ -30,6 +30,7 @@ class Reddit_API:
     self.output_dir = output_dir
     self._setup_logging()
     self._ensure_output_dir()
+    self._last_request_time = 0  # Track last request time for rate limiting
 
   def _setup_logging(self):
     """Configure logging for the API client"""
@@ -47,6 +48,21 @@ class Reddit_API:
     """Check if a post contains an image"""
     return hasattr(post, 'post_hint') and post.post_hint == 'image'
 
+  def _rate_limit(self):
+    """
+    Enforce rate limiting by ensuring at least request_delay seconds
+    have passed since the last request.
+    """
+    current_time = time.time()
+    time_since_last_request = current_time - self._last_request_time
+    
+    if time_since_last_request < self.request_delay:
+      sleep_time = self.request_delay - time_since_last_request
+      self.logger.debug(f"Rate limiting: sleeping for {sleep_time:.2f} seconds")
+      time.sleep(sleep_time)
+    
+    self._last_request_time = time.time()
+
   def _download_image(self, url: str, post_id: str) -> Optional[str]:
     """
     Download an image from a URL and save it to the output directory.
@@ -55,6 +71,7 @@ class Reddit_API:
         Path to saved image if successful, None otherwise
     """
     try:
+      self._rate_limit()  # Rate limit the image download request
       response = requests.get(url, stream=True)
       response.raise_for_status()
 
@@ -93,6 +110,7 @@ class Reddit_API:
     cards = []
 
     try:
+      self._rate_limit()  # Rate limit the subreddit fetch
       subreddit = self.reddit.subreddit(subreddit)
       for post in subreddit.top(time_filter=time_filter, limit=limit):
         if self._is_image_post(post):
@@ -108,9 +126,6 @@ class Reddit_API:
                 'created_utc': datetime.fromtimestamp(post.created_utc),
                 'image_path': image_path
             })
-
-          # Respect rate limits
-          time.sleep(self.request_delay)
 
       self.logger.info(f"Successfully processed {len(cards)} card images")
       return cards
@@ -141,6 +156,7 @@ class Reddit_API:
     self.logger.info(f"Fetching posts from r/{subreddit} between {start_date} and {end_date}")
     
     try:
+      self._rate_limit()  # Rate limit the subreddit fetch
       subreddit = self.reddit.subreddit(subreddit)
       current_batch = []
       
@@ -170,9 +186,6 @@ class Reddit_API:
           if len(current_batch) >= batch_size:
             yield current_batch
             current_batch = []
-          
-          # Respect rate limits
-          time.sleep(self.request_delay)
       
       # Yield any remaining posts
       if current_batch:
